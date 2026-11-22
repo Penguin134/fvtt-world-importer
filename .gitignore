@@ -1,0 +1,19 @@
+# Environment & credentials
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Godot / local temporary & log artifacts
+.godot/
+*.tmp
+*.bak
+*.log
+
+# Dependencies & OS artifacts
+__pycache__/
+*.py[cod]
+node_modules/
+.DS_Store
+Thumbs.db

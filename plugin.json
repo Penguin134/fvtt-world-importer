@@ -1,0 +1,54 @@
+{
+  "schema": "fus.session-plugin.v1",
+  "host_api": 1,
+  "scope": "session",
+  "id": "fvtt_world_importer",
+  "version": "0.1.0",
+  "name": "FVTT 世界包导入",
+  "description": "导入 Foundry VTT (FVTT) 世界包（.zip 归档或解压目录中的 world.json），在 Fu vtt 中创建对应场景、角色卡资源与怪物资源。",
+  "entry": "entry.gd",
+  "import_extensions": [
+    "zip",
+    "json"
+  ],
+  "import_action_label": "导入 FVTT 世界包",
+  "settings": [
+    {
+      "id": "proxy",
+      "type": "string",
+      "label": "图片下载代理",
+      "placeholder": "留空使用系统网络，或填写 http://127.0.0.1:7890",
+      "default": ""
+    },
+    {
+      "id": "import_scenes",
+      "type": "bool",
+      "label": "导入场景地图与墙体照明",
+      "default": true
+    },
+    {
+      "id": "import_characters",
+      "type": "bool",
+      "label": "导入角色卡资源",
+      "default": true
+    },
+    {
+      "id": "import_monsters",
+      "type": "bool",
+      "label": "导入怪物资源",
+      "default": true
+    },
+    {
+      "id": "include_hidden",
+      "type": "bool",
+      "label": "包含隐藏场景、墙体与物件",
+      "default": true
+    },
+    {
+      "id": "skip_missing_assets",
+      "type": "bool",
+      "label": "缺失图片时占位降级而非中止",
+      "default": true
+    }
+  ]
+}

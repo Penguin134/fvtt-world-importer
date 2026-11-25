@@ -1,11 +1,12 @@
 extends RefCounted
 
+const _MAX_SCENES: int = 64
 const _MAX_FLOORS: int = 512
 const _MAX_ENTITIES: int = 10000
 const _MAX_NAME_LENGTH: int = 96
 const _MAX_BIOGRAPHY_CHARS: int = 2048
-const _MAX_MODULE_ENTRY_BYTES: int = 6 * 1024 * 1024
-const _MAX_MODULE_TOTAL_BYTES: int = 8 * 1024 * 1024
+const _MAX_MODULE_ENTRY_BYTES: int = 16 * 1024 * 1024
+const _MAX_MODULE_TOTAL_BYTES: int = 24 * 1024 * 1024
 const _MAX_WORLD_BUDGET_BYTES: int = 30 * 1024 * 1024
 const _SHARED_ASSET_STORE_PATH: String = "res://services/storage/SharedAssetStore.cs"
 
@@ -262,6 +263,18 @@ func _bounded_size_estimate(val: Variant, depth: int = 0) -> int:
 	if depth > 32:
 		return -1
 	match typeof(val):
+		TYPE_NIL:
+			return 8
+		TYPE_BOOL, TYPE_INT, TYPE_FLOAT:
+			return 16
+		TYPE_VECTOR2, TYPE_VECTOR2I:
+			return 24
+		TYPE_RECT2, TYPE_RECT2I, TYPE_VECTOR3, TYPE_VECTOR3I, TYPE_COLOR, TYPE_VECTOR4, TYPE_VECTOR4I, TYPE_PLANE, TYPE_QUATERNION:
+			return 40
+		TYPE_TRANSFORM2D, TYPE_AABB, TYPE_BASIS:
+			return 64
+		TYPE_TRANSFORM3D, TYPE_PROJECTION:
+			return 80
 		TYPE_STRING, TYPE_STRING_NAME, TYPE_NODE_PATH:
 			return 16 + str(val).length() * 4
 		TYPE_PACKED_BYTE_ARRAY:
@@ -820,22 +833,49 @@ func map_to_world(
 
 	var floor0_uid: String = builder.get_active_floor_uid()
 	var scene_floor_uids: Array[String] = []
+	var scene_uids_by_idx: Array[String] = []
 	var active_floor_uid: String = floor0_uid
 	var found_active: bool = false
+	var entry_suid: String = ""
+	var warned_scene_overflow: bool = false
 
 	if not effective_scenes.is_empty():
 		var sc0: Dictionary = effective_scenes[0] as Dictionary
-		_rename_floor_safe(builder, floor0_uid, str(sc0.get("name", "")), "1F")
+		var sc0_raw_name: String = str(sc0.get("name", ""))
+		var fl0_name: String = _sanitize_catalog_name(sc0_raw_name, "1F")
+		var sc0_name: String = _sanitize_catalog_name(sc0_raw_name, "主场景")
+		if builder.has_method("configure_entry_scene"):
+			entry_suid = builder.configure_entry_scene(sc0_name, fl0_name)
+		else:
+			_rename_floor_safe(builder, floor0_uid, sc0_raw_name, "1F")
 		scene_floor_uids.append(floor0_uid)
+		scene_uids_by_idx.append(entry_suid)
 		if bool(sc0.get("active", false)):
 			active_floor_uid = floor0_uid
 			found_active = true
 		for i: int in range(1, effective_scenes.size()):
 			var sc_i: Dictionary = effective_scenes[i] as Dictionary
 			var fl_name: String = _sanitize_catalog_name(str(sc_i.get("name", "")), "%dF" % (i + 1))
-			var new_fuid: String = builder.add_floor(fl_name, Color(0.28, 0.65, 0.40), false)
-			if new_fuid.is_empty():
-				return {"ok": false, "reason": "add_floor_failed"}
+			var new_fuid: String = ""
+			if builder.has_method("add_scene") and i < _MAX_SCENES:
+				var new_suid: String = builder.add_scene(fl_name, fl_name, Color(0.28, 0.65, 0.40), "", false)
+				new_fuid = builder.get_scene_default_floor_uid(new_suid)
+				if new_suid.is_empty() or new_fuid.is_empty():
+					return {"ok": false, "reason": "add_scene_failed"}
+				scene_uids_by_idx.append(new_suid)
+			elif builder.has_method("add_floor_to_scene") and not entry_suid.is_empty():
+				if not warned_scene_overflow:
+					warned_scene_overflow = true
+					_warn(session, "场景数量（%d）超过宿主多场景上限 %d，第 %d 个及之后的场景已作为附加楼层归入默认场景。" % [effective_scenes.size(), _MAX_SCENES, _MAX_SCENES + 1])
+				new_fuid = builder.add_floor_to_scene(entry_suid, fl_name, Color(0.28, 0.65, 0.40), false, false)
+				if new_fuid.is_empty():
+					return {"ok": false, "reason": "add_floor_failed"}
+				scene_uids_by_idx.append("")
+			else:
+				new_fuid = builder.add_floor(fl_name, Color(0.28, 0.65, 0.40), false)
+				if new_fuid.is_empty():
+					return {"ok": false, "reason": "add_floor_failed"}
+				scene_uids_by_idx.append("")
 			scene_floor_uids.append(new_fuid)
 			if not found_active and bool(sc_i.get("active", false)):
 				active_floor_uid = new_fuid
@@ -1107,12 +1147,21 @@ func map_to_world(
 			)
 			if not bool(bg_res.get("ok", false)):
 				return bg_res
+			var bg_sprite: String = str(bg_res.get("sprite_path", ""))
+			if (
+				bg_sprite.begins_with("asset://")
+				and bg_sprite.length() >= 76
+				and s_idx < scene_uids_by_idx.size()
+				and not scene_uids_by_idx[s_idx].is_empty()
+				and builder.has_method("set_scene_cover_asset")
+			):
+				builder.set_scene_cover_asset(scene_uids_by_idx[s_idx], bg_sprite)
 			var bg_eid: String = builder.add_map_tile(
 				"scene:%s:bg" % sc_id,
 				sc_name,
 				bg_center,
 				bg_size,
-				str(bg_res.get("sprite_path", "")),
+				bg_sprite,
 				0.0,
 				Vector2.ONE,
 				sc_hidden,
@@ -1447,8 +1496,18 @@ func map_to_world(
 				if dv > 0.0:
 					builder.attach_simple_vision(eid, (dv / 5.0) * 64.0, 360.0, false, true)
 
-	# Restore active floor before writing modules
+	# Restore active floor & entry/active scene before writing modules
 	builder.set_active_floor(active_floor_uid)
+	if (
+		not effective_scenes.is_empty()
+		and builder.has_method("has_scenes_configured")
+		and builder.has_scenes_configured()
+	):
+		var active_suid: String = builder.get_scene_for_floor(active_floor_uid)
+		if not active_suid.is_empty():
+			if found_active:
+				builder.set_entry_scene(active_suid)
+			builder.set_active_scene(active_suid, active_floor_uid, true)
 
 	# Write world.modules: grid_alignment (8 exact keys)
 	if not effective_scenes.is_empty():
@@ -1469,7 +1528,7 @@ func map_to_world(
 		}
 		builder.set_module_state("grid_alignment", 1, ga_state)
 
-	# Write world.modules: fvtt_world_importer with progressive 6/8/30 MiB budget trimming
+	# Write world.modules: fvtt_world_importer with progressive 16/24/30 MiB budget trimming
 	var world_meta_clean: Dictionary = {
 		"id": str(world_meta.get("id", "")),
 		"title": str(world_meta.get("title", "")),
